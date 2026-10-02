@@ -12,6 +12,7 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+BATCH_RE = re.compile(r"^/api/records/(\d+)/service-batches$")
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -57,7 +58,12 @@ def make_handler(service: Any, static_dir: Path):
 
         def _handle_error(self, exc: Exception) -> None:
             if isinstance(exc, DomainError):
-                self._send(exc.status, {"error": exc.code, "message": str(exc)})
+                payload = {"error": exc.code, "message": str(exc)}
+                details = getattr(exc, "details", None)
+                if details:
+                    # 后到者先看到新依据：冲突时回传当前版本，客户端据此刷新。
+                    payload["details"] = details
+                self._send(exc.status, payload)
             else:
                 self._send(500, {"error": "internal_error", "message": "服务内部错误"})
 
@@ -106,6 +112,19 @@ def make_handler(service: Any, static_dir: Path):
                         raise ValidationError("expected_version必须是整数")
                     record = service.act(self._actor(), int(match.group(1)), version, match.group(2), body.get("data", {}))
                     self._send(200, record)
+                    return
+                match = BATCH_RE.match(parsed.path)
+                if match:
+                    batch_id = body.get("batch_id")
+                    if not isinstance(batch_id, str) or not batch_id.strip():
+                        raise ValidationError("batch_id必须是文本")
+                    version = body.get("expected_version")
+                    if not isinstance(version, int):
+                        raise ValidationError("expected_version必须是整数")
+                    result = service.submit_service_batch(
+                        self._actor(), int(match.group(1)), batch_id.strip(), version, body.get("items", [])
+                    )
+                    self._send(200 if result["completed"] else 409, result)
                     return
                 self._send(404, {"error": "not_found", "message": "路径不存在"})
             except Exception as exc:

@@ -22,6 +22,10 @@ class Conflict(DomainError):
     status = 409
     code = "conflict"
 
+    def __init__(self, message: str, details: Dict[str, Any] = None) -> None:
+        super().__init__(message)
+        self.details = details or {}
+
 
 class PermissionDenied(DomainError):
     status = 403
