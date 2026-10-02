@@ -2,7 +2,7 @@
 from typing import Any, Dict, List, Optional
 
 from .audit import AuditRecorder
-from .domain import Actor, PermissionDenied, text
+from .domain import Actor, Conflict, PermissionDenied, text
 from .repository import Repository
 from .rules import DomainRules
 
@@ -22,6 +22,16 @@ class Service:
     def _ensure_known_role(self, actor: Actor) -> None:
         if not self.rules.known_role(actor.role):
             raise PermissionDenied("角色无权访问该服务")
+
+    @staticmethod
+    def _current_basis(record: Dict[str, Any]) -> Dict[str, Any]:
+        payload = record.get("payload", {})
+        return {
+            "current_version": record.get("version"),
+            "current_state": record.get("state"),
+            "current_basis_version": int(payload.get("basis_version", 1)),
+            "current_service_minutes": int(payload.get("service_minutes", 0)),
+        }
 
     def create(self, actor: Actor, reference: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         actor = self._actor(actor)
@@ -50,8 +60,13 @@ class Service:
         if not self.rules.role_can_action(actor.role, action):
             raise PermissionDenied("角色无权执行该操作")
         record = self.repository.get(record_id)
-        self.rules.require_transition(record, action)
-        new_state, new_payload, summary = self.rules.apply_action(record, action, data or {})
+        try:
+            self.rules.require_transition(record, action)
+        except Conflict as exc:
+            raise Conflict(str(exc), details=self._current_basis(record)) from exc
+        new_state, new_payload, summary, extra = self.rules.apply_action(record, action, data or {})
+        details = {"summary": summary, "input": data or {}, "from": record["state"], "to": new_state, "basis_version": int(new_payload.get("basis_version", 1))}
+        details.update(extra)
         return self.repository.mutate(
             record_id=record_id,
             expected_version=int(expected_version),
@@ -59,7 +74,7 @@ class Service:
             payload=new_payload,
             actor_id=actor.user_id,
             action=action,
-            details={"summary": summary, "input": data or {}, "from": record["state"], "to": new_state},
+            details=details,
         )
 
     def timeline(self, actor: Actor, record_id: int) -> List[Dict[str, Any]]:
@@ -67,7 +82,16 @@ class Service:
         self._ensure_known_role(actor)
         return self.audit.timeline(record_id)
 
-    def stats(self, actor: Actor) -> Dict[str, int]:
+    def stats(self, actor: Actor) -> Dict[str, Any]:
         actor = self._actor(actor)
         self._ensure_known_role(actor)
-        return self.repository.stats()
+        records = self.repository.list_records(limit=500)
+        states: Dict[str, int] = {}
+        basis_versions: Dict[str, int] = {}
+        items: List[Dict[str, Any]] = []
+        for record in records:
+            states[record["state"]] = states.get(record["state"], 0) + 1
+            basis = int(record["payload"].get("basis_version", 1))
+            basis_versions[str(basis)] = basis_versions.get(str(basis), 0) + 1
+            items.append({"id": record["id"], "reference": record["reference"], "state": record["state"], "version": record["version"], "basis_version": basis})
+        return {"states": states, "basis_versions": basis_versions, "records": items}

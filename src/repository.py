@@ -69,7 +69,7 @@ class Repository:
                 record_id = int(cursor.lastrowid)
                 connection.execute(
                     "INSERT INTO audit_events(record_id,action,actor_id,version,details,created_at) VALUES(?,?,?,?,?,?)",
-                    (record_id, "created", actor_id, 1, json.dumps({"state": state}, ensure_ascii=False, sort_keys=True), now),
+                    (record_id, "created", actor_id, 1, json.dumps({"state": state, "basis_version": int(payload.get("basis_version", 1))}, ensure_ascii=False, sort_keys=True), now),
                 )
                 row = connection.execute("SELECT * FROM records WHERE id=?", (record_id,)).fetchone()
         except sqlite3.IntegrityError as exc:
@@ -96,13 +96,19 @@ class Repository:
         now = _now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT version FROM records WHERE id=?", (record_id,)).fetchone()
+            row = connection.execute("SELECT state,version,payload FROM records WHERE id=?", (record_id,)).fetchone()
             if row is None:
                 connection.rollback()
                 raise NotFound("记录不存在")
             if int(row["version"]) != int(expected_version):
                 connection.rollback()
-                raise Conflict("版本冲突，请刷新后重试")
+                current = json.loads(row["payload"])
+                raise Conflict("版本冲突，请刷新后重试", details={
+                    "current_version": int(row["version"]),
+                    "current_state": row["state"],
+                    "current_basis_version": int(current.get("basis_version", 1)),
+                    "current_service_minutes": int(current.get("service_minutes", 0)),
+                })
             version = int(expected_version) + 1
             connection.execute(
                 "UPDATE records SET state=?,version=?,payload=?,updated_by=?,updated_at=? WHERE id=?",
@@ -136,11 +142,6 @@ class Repository:
             item["details"] = json.loads(item["details"])
             result.append(item)
         return result
-
-    def stats(self) -> Dict[str, int]:
-        with self._connect() as connection:
-            rows = connection.execute("SELECT state, COUNT(*) AS total FROM records GROUP BY state").fetchall()
-        return {str(row["state"]): int(row["total"]) for row in rows}
 
     def health(self) -> bool:
         try:

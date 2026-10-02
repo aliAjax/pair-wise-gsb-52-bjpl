@@ -57,7 +57,11 @@ def make_handler(service: Any, static_dir: Path):
 
         def _handle_error(self, exc: Exception) -> None:
             if isinstance(exc, DomainError):
-                self._send(exc.status, {"error": exc.code, "message": str(exc)})
+                body: Dict[str, Any] = {"error": exc.code, "message": str(exc)}
+                details = getattr(exc, "details", None)
+                if details:
+                    body["details"] = details
+                self._send(exc.status, body)
             else:
                 self._send(500, {"error": "internal_error", "message": "服务内部错误"})
 

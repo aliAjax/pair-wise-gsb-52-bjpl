@@ -17,13 +17,17 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(prepared["missing_minutes"], 480)
         self.assertEqual(prepared["compliance_rate"], 20.0)
         self.assertFalse(prepared["review_overdue"])
+        self.assertEqual(prepared["basis_version"], 1)
+        self.assertEqual(prepared["baseline_minutes"], 120)
+        self.assertEqual(prepared["service_log"], [])
 
     def test_action_calculation(self):
         action, role, data, expected_state = FLOW[0]
         record = {"id": 1, "state": self.rules.INITIAL_STATE, "payload": self.rules.prepare_create(CREATE_DATA)}
-        state, payload, summary = self.rules.apply_action(record, action, data)
+        state, payload, summary, extra = self.rules.apply_action(record, action, data)
         self.assertEqual(state, expected_state)
         self.assertTrue(payload["consent"])
+        self.assertEqual(payload["consent_basis_version"], 1)
 
     def test_invalid_input(self):
         invalid = dict(CREATE_DATA)
